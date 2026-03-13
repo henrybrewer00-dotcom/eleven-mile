@@ -562,7 +562,7 @@ function App() {
     return (
       <>
         <div className="app-header">
-          <h1><span className="fire">RAP</span> BATTLE</h1>
+          <h1><span className="fire">11</span>-MILE</h1>
           <p>Pick two historical figures. We make it a real song.</p>
         </div>
 
@@ -616,7 +616,7 @@ function App() {
     return (
       <>
         <div className="app-header">
-          <h1><span className="fire">RAP</span> BATTLE</h1>
+          <h1><span className="fire">11</span>-MILE</h1>
           <p>Pick two historical figures. We make it a real song.</p>
         </div>
 
@@ -672,7 +672,7 @@ function App() {
   return (
     <>
       <div className="app-header">
-        <h1><span className="fire">RAP</span> BATTLE</h1>
+        <h1><span className="fire">11</span>-MILE</h1>
       </div>
 
       <button className="back-btn" onClick={() => {
