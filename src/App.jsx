@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 
-const API = 'http://localhost:3001/api'
+const API = '/api'
 const PARALLEL_BATCH_SIZE = 2
 
 function App() {
@@ -343,14 +343,13 @@ function App() {
     }
   }
 
-  // Trim silence from start and end of an AudioBuffer
-  const trimSilence = (audioCtx, audioBuffer, threshold = 0.01) => {
+  // Trim silence and low-energy tails from an AudioBuffer
+  const trimSilence = (audioCtx, audioBuffer) => {
     const ch0 = audioBuffer.getChannelData(0)
     const len = audioBuffer.length
     const sr = audioBuffer.sampleRate
     const channels = audioBuffer.numberOfChannels
-
-    const windowSize = Math.floor(sr * 0.02)
+    const windowSize = Math.floor(sr * 0.02) // 20ms windows
 
     const getEnergy = (start, size) => {
       let sum = 0
@@ -361,18 +360,31 @@ function App() {
       return sum / (end - start)
     }
 
+    // Compute peak energy to set a relative threshold
+    let peakEnergy = 0
+    for (let i = 0; i < len - windowSize; i += windowSize) {
+      const e = getEnergy(i, windowSize)
+      if (e > peakEnergy) peakEnergy = e
+    }
+
+    // Use 2% of peak as the "has real content" threshold
+    // This catches quiet instrumental tails that absolute 0.01 misses
+    const threshold = Math.max(0.005, peakEnergy * 0.02)
+
+    // Find first window above threshold
     let trimStart = 0
     for (let i = 0; i < len - windowSize; i += windowSize) {
       if (getEnergy(i, windowSize) > threshold) {
-        trimStart = Math.max(0, i - Math.floor(sr * 0.05))
+        trimStart = Math.max(0, i - Math.floor(sr * 0.03))
         break
       }
     }
 
+    // Find last window above threshold
     let trimEnd = len
     for (let i = len - windowSize; i > trimStart; i -= windowSize) {
       if (getEnergy(i, windowSize) > threshold) {
-        trimEnd = Math.min(len, i + windowSize + Math.floor(sr * 0.03))
+        trimEnd = Math.min(len, i + windowSize)
         break
       }
     }
@@ -413,7 +425,8 @@ function App() {
       return { url: null, timings: [] }
     }
 
-    const crossfadeSamples = Math.floor(buffers[0].sampleRate * 0.2)
+    // 400ms crossfade to blend sections smoothly
+    const crossfadeSamples = Math.floor(buffers[0].sampleRate * 0.4)
     const sampleRate = buffers[0].sampleRate
     const channels = buffers[0].numberOfChannels
 
@@ -577,7 +590,7 @@ function App() {
     return (
       <>
         <div className="app-header">
-          <h1><span className="fire">11</span>-MILE</h1>
+          <h1><span className="fire">ELEVEN</span>-MILE</h1>
           <p>Pick two historical figures. We make it a real song.</p>
         </div>
 
@@ -631,7 +644,7 @@ function App() {
     return (
       <>
         <div className="app-header">
-          <h1><span className="fire">11</span>-MILE</h1>
+          <h1><span className="fire">ELEVEN</span>-MILE</h1>
           <p>Pick two historical figures. We make it a real song.</p>
         </div>
 
@@ -687,7 +700,7 @@ function App() {
   return (
     <>
       <div className="app-header">
-        <h1><span className="fire">11</span>-MILE</h1>
+        <h1><span className="fire">ELEVEN</span>-MILE</h1>
       </div>
 
       <button className="back-btn" onClick={() => {
