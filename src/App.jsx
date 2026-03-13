@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 
 const API = 'http://localhost:3001/api'
+const PARALLEL_BATCH_SIZE = 3
 
 function App() {
   const [view, setView] = useState('home') // home | create | battle
@@ -24,9 +25,15 @@ function App() {
   const [playbackTime, setPlaybackTime] = useState(0)
   const [showStage, setShowStage] = useState(false)
   const [includeChorus, setIncludeChorus] = useState(false)
+  const [showVote, setShowVote] = useState(false)
+  const [voted, setVoted] = useState(null)
   const audioRef = useRef(null)
   const songAudioRef = useRef(null)
   const rafRef = useRef(null)
+  const canvasRef = useRef(null)
+  const analyserRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const sourceNodeRef = useRef(null)
 
   useEffect(() => {
     fetchBattles()
@@ -44,17 +51,84 @@ function App() {
     reSplice()
   }, [includeChorus]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Track playback time via requestAnimationFrame
-  const startTracking = useCallback(() => {
-    const tick = () => {
+  // Audio visualizer
+  const setupAnalyser = useCallback(() => {
+    const audio = songAudioRef.current
+    if (!audio) return
+
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext()
+    }
+    const ctx = audioCtxRef.current
+
+    if (!sourceNodeRef.current) {
+      sourceNodeRef.current = ctx.createMediaElementSource(audio)
+    }
+
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 256
+    sourceNodeRef.current.connect(analyser)
+    analyser.connect(ctx.destination)
+    analyserRef.current = analyser
+  }, [])
+
+  const drawVisualizer = useCallback(() => {
+    const canvas = canvasRef.current
+    const analyser = analyserRef.current
+    if (!canvas || !analyser) return
+
+    const ctx = canvas.getContext('2d')
+    const bufferLength = analyser.frequencyBinCount
+    const dataArray = new Uint8Array(bufferLength)
+
+    const draw = () => {
+      if (!showStage && !isPlaying) return
+      rafRef.current = requestAnimationFrame(draw)
+
+      analyser.getByteFrequencyData(dataArray)
+
+      const w = canvas.width
+      const h = canvas.height
+      ctx.clearRect(0, 0, w, h)
+
+      const barCount = 48
+      const barWidth = w / barCount
+      const gap = 2
+
+      for (let i = 0; i < barCount; i++) {
+        const dataIdx = Math.floor(i * bufferLength / barCount)
+        const value = dataArray[dataIdx] / 255
+        const barHeight = value * h * 0.8
+
+        // Color based on active fighter
+        let r, g, b
+        if (activeFighter === 1) {
+          r = 255; g = 58; b = 58
+        } else if (activeFighter === 2) {
+          r = 58; g = 138; b = 255
+        } else {
+          r = 255; g = 204; b = 0
+        }
+
+        const alpha = 0.15 + value * 0.35
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`
+
+        const x = i * barWidth + gap / 2
+        ctx.fillRect(x, h - barHeight, barWidth - gap, barHeight)
+
+        // Mirror on top (subtle)
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.3})`
+        ctx.fillRect(x, 0, barWidth - gap, barHeight * 0.3)
+      }
+
+      // Update playback time too
       const audio = songAudioRef.current
       if (audio && !audio.paused) {
         setPlaybackTime(audio.currentTime)
       }
-      rafRef.current = requestAnimationFrame(tick)
     }
-    rafRef.current = requestAnimationFrame(tick)
-  }, [])
+    draw()
+  }, [showStage, isPlaying]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopTracking = useCallback(() => {
     if (rafRef.current) {
@@ -103,6 +177,8 @@ function App() {
     setError('')
     setLoading(true)
     setLoadingMsg('Loading battle...')
+    setVoted(null)
+    setShowVote(false)
     try {
       const res = await fetch(`${API}/battles/${id}`)
       const data = await res.json()
@@ -141,6 +217,21 @@ function App() {
     fetchBattles()
   }
 
+  // Compose a single section, returns blob URL
+  const composeOne = async (sectionId, section, battleObj) => {
+    const songRes = await fetch(`${API}/compose-section`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sectionId, section, battle: battleObj }),
+    })
+    if (!songRes.ok) {
+      const errData = await songRes.json().catch(() => ({}))
+      throw new Error(errData.error || `Failed to compose ${section.name}`)
+    }
+    const blob = await songRes.blob()
+    return URL.createObjectURL(blob)
+  }
+
   const generateBattle = async () => {
     setError('')
     setBattle(null)
@@ -149,6 +240,8 @@ function App() {
     setSectionTimings([])
     setImg1(null)
     setImg2(null)
+    setVoted(null)
+    setShowVote(false)
     setLoading(true)
     setView('battle')
 
@@ -172,27 +265,24 @@ function App() {
       // Fetch images
       fetchImages(data.figure1.name, data.figure2.name)
 
-      // Step 2: Compose each section, saved to DB
-      const urls = []
-      for (let i = 0; i < data.sections.length; i++) {
-        const section = data.sections[i]
-        setLoadingMsg(`Producing ${section.name} (${i + 1}/${data.sections.length})...`)
+      // Step 2: Compose sections in parallel batches
+      const urls = new Array(data.sections.length).fill(null)
+      const total = data.sections.length
 
-        const songRes = await fetch(`${API}/compose-section`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sectionId: data.sectionIds[i],
-            section,
-            battle: data,
-          }),
-        })
-        if (!songRes.ok) {
-          const errData = await songRes.json().catch(() => ({}))
-          throw new Error(errData.error || `Failed to compose ${section.name}`)
+      for (let batchStart = 0; batchStart < total; batchStart += PARALLEL_BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + PARALLEL_BATCH_SIZE, total)
+        const batchNames = data.sections.slice(batchStart, batchEnd).map(s => s.name).join(', ')
+        setLoadingMsg(`Producing ${batchNames} (${batchStart + 1}-${batchEnd}/${total})...`)
+
+        const promises = []
+        for (let i = batchStart; i < batchEnd; i++) {
+          promises.push(
+            composeOne(data.sectionIds[i], data.sections[i], data).then(url => {
+              urls[i] = url
+            })
+          )
         }
-        const blob = await songRes.blob()
-        urls.push(URL.createObjectURL(blob))
+        await Promise.all(promises)
       }
       setSectionUrls(urls)
 
@@ -220,29 +310,16 @@ function App() {
     setError('')
 
     try {
-      const songRes = await fetch(`${API}/compose-section`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sectionId: sectionIds[index],
-          section,
-          battle,
-        }),
-      })
-      if (!songRes.ok) {
-        const errData = await songRes.json().catch(() => ({}))
-        throw new Error(errData.error || `Failed to re-compose ${section.name}`)
-      }
-      const blob = await songRes.blob()
+      const url = await composeOne(sectionIds[index], section, battle)
       const newUrls = [...sectionUrls]
-      newUrls[index] = URL.createObjectURL(blob)
+      newUrls[index] = url
       setSectionUrls(newUrls)
 
       // Re-splice
       if (newUrls.every(u => u)) {
         const chorusSkip = includeChorus ? [] : getChorusIndices(sections)
-        const { url, timings } = await spliceAudio(newUrls, chorusSkip)
-        setSongUrl(url)
+        const { url: finalUrl, timings } = await spliceAudio(newUrls, chorusSkip)
+        setSongUrl(finalUrl)
         setSectionTimings(timings)
       }
     } catch (err) {
@@ -282,7 +359,6 @@ function App() {
     let trimEnd = len
     for (let i = len - windowSize; i > trimStart; i -= windowSize) {
       if (getEnergy(i, windowSize) > threshold) {
-        // Tight tail — just 30ms after last audio
         trimEnd = Math.min(len, i + windowSize + Math.floor(sr * 0.03))
         break
       }
@@ -310,8 +386,7 @@ function App() {
       allBuffers.push(trimmed)
     }
 
-    // Filter out skipped sections but keep index mapping for timings
-    const indexMap = [] // maps filtered index -> original index
+    const indexMap = []
     const buffers = []
     for (let i = 0; i < allBuffers.length; i++) {
       if (!skipIndices.includes(i)) {
@@ -325,7 +400,6 @@ function App() {
       return { url: null, timings: [] }
     }
 
-    // 200ms crossfade for smoother transitions
     const crossfadeSamples = Math.floor(buffers[0].sampleRate * 0.2)
     const sampleRate = buffers[0].sampleRate
     const channels = buffers[0].numberOfChannels
@@ -337,7 +411,6 @@ function App() {
 
     const combined = audioCtx.createBuffer(channels, totalLength, sampleRate)
 
-    // Track section timings
     const timings = []
     let offset = 0
     for (let b = 0; b < buffers.length; b++) {
@@ -402,17 +475,44 @@ function App() {
     if (!songUrl) return
     const audio = songAudioRef.current
     if (!audio) return
+
     if (isPlaying) {
       audio.pause()
       setIsPlaying(false)
       setShowStage(false)
       stopTracking()
     } else {
+      // Setup analyser on first play
+      if (!analyserRef.current) {
+        setupAnalyser()
+      }
+      if (audioCtxRef.current?.state === 'suspended') {
+        audioCtxRef.current.resume()
+      }
       audio.play()
       setIsPlaying(true)
       setShowStage(true)
-      startTracking()
+      setShowVote(false)
+      setVoted(null)
+      drawVisualizer()
     }
+  }
+
+  const onSongEnded = () => {
+    setIsPlaying(false)
+    stopTracking()
+    // Show vote screen instead of closing stage
+    setShowVote(true)
+  }
+
+  const castVote = (fighter) => {
+    setVoted(fighter)
+  }
+
+  const closeVote = () => {
+    setShowVote(false)
+    setShowStage(false)
+    setVoted(null)
   }
 
   const playSection = (index) => {
@@ -578,7 +678,7 @@ function App() {
       <button className="back-btn" onClick={() => {
         setView('home'); setBattle(null); setSongUrl(null); setSectionUrls([])
         setSectionTimings([]); setError(''); setShowStage(false); stopTracking()
-        setImg1(null); setImg2(null); setIsPlaying(false)
+        setImg1(null); setImg2(null); setIsPlaying(false); setShowVote(false); setVoted(null)
       }}>
         &larr; All Battles
       </button>
@@ -596,7 +696,7 @@ function App() {
           <h2 className="battle-title">{battleData.title}</h2>
 
           {/* Watch Performance button + chorus toggle - at the top */}
-          {songUrl && (
+          {songUrl && !showVote && (
             <div className="performance-controls">
               <button
                 className={`btn ${isPlaying && showStage ? 'btn-stop' : 'btn-play'}`}
@@ -618,39 +718,47 @@ function App() {
           )}
 
           {/* STAGE VIEW - shown during full song playback */}
-          {showStage && sectionTimings.length > 0 && (
-            <div className="stage">
-              <div className={`stage-fighter left ${activeFighter === 1 ? 'active' : ''} ${activeFighter === 2 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''}`}>
-                {img1 ? (
-                  <img src={img1} alt={fig1?.name} className="fighter-portrait" />
-                ) : (
-                  <div className="fighter-portrait placeholder">{fig1?.name?.[0]}</div>
-                )}
-                <div className="fighter-name red">{fig1?.name}</div>
-              </div>
+          {(showStage || showVote) && sectionTimings.length > 0 && (
+            <div className="stage-container">
+              <canvas
+                ref={canvasRef}
+                className="visualizer-canvas"
+                width={600}
+                height={200}
+              />
+              <div className="stage">
+                <div className={`stage-fighter left ${activeFighter === 1 ? 'active' : ''} ${activeFighter === 2 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 1 ? 'winner' : ''} ${showVote && voted === 2 ? 'loser' : ''}`}>
+                  {img1 ? (
+                    <img src={img1} alt={fig1?.name} className="fighter-portrait" />
+                  ) : (
+                    <div className="fighter-portrait placeholder">{fig1?.name?.[0]}</div>
+                  )}
+                  <div className="fighter-name red">{fig1?.name}</div>
+                </div>
 
-              <div className="stage-vs">
-                {activeSectionIdx >= 0 && sections[activeSectionIdx] && (
-                  <div className="stage-section-label">
-                    {sections[activeSectionIdx].name}
-                  </div>
-                )}
-                <span className="stage-vs-text">VS</span>
-              </div>
+                <div className="stage-vs">
+                  {!showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
+                    <div className="stage-section-label">
+                      {sections[activeSectionIdx].name}
+                    </div>
+                  )}
+                  <span className="stage-vs-text">VS</span>
+                </div>
 
-              <div className={`stage-fighter right ${activeFighter === 2 ? 'active' : ''} ${activeFighter === 1 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''}`}>
-                {img2 ? (
-                  <img src={img2} alt={fig2?.name} className="fighter-portrait" />
-                ) : (
-                  <div className="fighter-portrait placeholder">{fig2?.name?.[0]}</div>
-                )}
-                <div className="fighter-name blue">{fig2?.name}</div>
+                <div className={`stage-fighter right ${activeFighter === 2 ? 'active' : ''} ${activeFighter === 1 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 2 ? 'winner' : ''} ${showVote && voted === 1 ? 'loser' : ''}`}>
+                  {img2 ? (
+                    <img src={img2} alt={fig2?.name} className="fighter-portrait" />
+                  ) : (
+                    <div className="fighter-portrait placeholder">{fig2?.name?.[0]}</div>
+                  )}
+                  <div className="fighter-name blue">{fig2?.name}</div>
+                </div>
               </div>
             </div>
           )}
 
           {/* LYRICS - shown during playback */}
-          {showStage && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
+          {showStage && !showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
             <div className={`lyrics-highlight ${getSectionColor(sections[activeSectionIdx])}`}>
               <div className="lyrics-text">
                 {(Array.isArray(sections[activeSectionIdx].lines) ? sections[activeSectionIdx].lines : (sections[activeSectionIdx].lines_json || [])).join('\n')}
@@ -658,8 +766,35 @@ function App() {
             </div>
           )}
 
+          {/* VOTE SCREEN - shown after song ends */}
+          {showVote && (
+            <div className="vote-screen">
+              <h3 className="vote-title">Who Won?</h3>
+              {!voted ? (
+                <div className="vote-buttons">
+                  <button className="vote-btn red" onClick={() => castVote(1)}>
+                    {fig1?.name}
+                  </button>
+                  <button className="vote-btn blue" onClick={() => castVote(2)}>
+                    {fig2?.name}
+                  </button>
+                </div>
+              ) : (
+                <div className="vote-result">
+                  <div className="vote-winner-name">
+                    {voted === 1 ? fig1?.name : fig2?.name}
+                  </div>
+                  <div className="vote-winner-label">WINS THE BATTLE</div>
+                  <button className="btn btn-fire" onClick={closeVote} style={{ marginTop: 20 }}>
+                    Done
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Fighter portraits + section recompose (when not in stage mode) */}
-          {!showStage && fig1 && fig2 && (
+          {!showStage && !showVote && fig1 && fig2 && (
             <div className="battle-bios">
               <div className="stage-portraits-static">
                 <div className="portrait-bio">
@@ -684,8 +819,8 @@ function App() {
             </div>
           )}
 
-          {/* Section controls - no lyrics, just recompose buttons (when not in stage mode) */}
-          {!showStage && (
+          {/* Section controls (when not in stage mode) */}
+          {!showStage && !showVote && (
             <div className="sections-list">
               {sections.map((section, i) => {
                 const color = getSectionColor(section)
@@ -724,12 +859,12 @@ function App() {
             </div>
           )}
 
-          {songUrl && (
+          {songUrl && !showVote && (
             <div className="audio-section">
               <audio
                 ref={songAudioRef}
                 src={songUrl}
-                onEnded={() => { setIsPlaying(false); setShowStage(false); stopTracking() }}
+                onEnded={onSongEnded}
                 onPlay={() => { setIsPlaying(true) }}
                 onPause={() => { setIsPlaying(false) }}
                 className="song-player"

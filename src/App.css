@@ -725,13 +725,31 @@
 .section-row.gold .section-row-label { color: var(--gold); }
 
 /* ---- STAGE ---- */
+.stage-container {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  margin-bottom: 12px;
+}
+
+.visualizer-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .stage {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 20px;
   padding: 32px 0;
-  margin-bottom: 12px;
 }
 
 .stage-fighter {
@@ -917,6 +935,113 @@
   line-height: 1.5;
 }
 
+/* Winner / Loser states */
+.stage-fighter.winner {
+  filter: brightness(1.3) saturate(1.5);
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.stage-fighter.winner.left {
+  filter: brightness(1.3) saturate(1.5) drop-shadow(0 0 30px rgba(255, 58, 58, 0.7));
+}
+
+.stage-fighter.winner.right {
+  filter: brightness(1.3) saturate(1.5) drop-shadow(0 0 30px rgba(58, 138, 255, 0.7));
+}
+
+.stage-fighter.loser {
+  filter: brightness(0.25) saturate(0.1) grayscale(0.8);
+  opacity: 0.3;
+  transform: scale(0.8);
+}
+
+/* ---- VOTE SCREEN ---- */
+.vote-screen {
+  text-align: center;
+  padding: 20px 0 32px;
+}
+
+.vote-title {
+  font-size: 28px;
+  font-weight: 900;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  margin-bottom: 24px;
+  text-shadow: 0 0 30px rgba(255, 204, 0, 0.3);
+}
+
+.vote-buttons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.vote-btn {
+  flex: 1;
+  max-width: 200px;
+  padding: 18px 24px;
+  border: 2px solid;
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: 800;
+  font-family: var(--sans);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: all 0.2s;
+  background: transparent;
+}
+
+.vote-btn.red {
+  border-color: var(--accent1);
+  color: var(--accent1);
+}
+
+.vote-btn.blue {
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+
+.vote-btn.red:hover {
+  background: rgba(255, 58, 58, 0.15);
+  box-shadow: 0 0 20px rgba(255, 58, 58, 0.3);
+  transform: translateY(-2px);
+}
+
+.vote-btn.blue:hover {
+  background: rgba(58, 138, 255, 0.15);
+  box-shadow: 0 0 20px rgba(58, 138, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+.vote-result {
+  animation: fadeInUp 0.4s ease;
+}
+
+.vote-winner-name {
+  font-size: 32px;
+  font-weight: 900;
+  color: var(--gold);
+  text-shadow: 0 0 30px rgba(255, 204, 0, 0.4);
+  margin-bottom: 8px;
+}
+
+.vote-winner-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  opacity: 0.7;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (max-width: 600px) {
   .fighters-row { flex-direction: column; gap: 12px; }
   .vs-badge { padding-top: 0; }
@@ -927,4 +1052,7 @@
   .lyrics-words { font-size: 15px; }
   .stage-portraits-static { gap: 20px; }
   .fighter-portrait-small { width: 60px; height: 60px; }
+  .vote-buttons { flex-direction: column; align-items: center; }
+  .vote-btn { max-width: 100%; }
+  .vote-winner-name { font-size: 24px; }
 }
