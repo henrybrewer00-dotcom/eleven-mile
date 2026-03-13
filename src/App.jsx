@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 
 const API = 'http://localhost:3001/api'
-const PARALLEL_BATCH_SIZE = 3
+const PARALLEL_BATCH_SIZE = 2
 
 function App() {
   const [view, setView] = useState('home') // home | create | battle
@@ -51,6 +51,18 @@ function App() {
     reSplice()
   }, [includeChorus]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Track playback time via requestAnimationFrame
+  const startTracking = useCallback(() => {
+    const tick = () => {
+      const audio = songAudioRef.current
+      if (audio && !audio.paused) {
+        setPlaybackTime(audio.currentTime)
+      }
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }, [])
+
   // Audio visualizer
   const setupAnalyser = useCallback(() => {
     const audio = songAudioRef.current
@@ -72,6 +84,9 @@ function App() {
     analyserRef.current = analyser
   }, [])
 
+  const vizRafRef = useRef(null)
+  const vizRunningRef = useRef(false)
+
   const drawVisualizer = useCallback(() => {
     const canvas = canvasRef.current
     const analyser = analyserRef.current
@@ -80,10 +95,11 @@ function App() {
     const ctx = canvas.getContext('2d')
     const bufferLength = analyser.frequencyBinCount
     const dataArray = new Uint8Array(bufferLength)
+    vizRunningRef.current = true
 
     const draw = () => {
-      if (!showStage && !isPlaying) return
-      rafRef.current = requestAnimationFrame(draw)
+      if (!vizRunningRef.current) return
+      vizRafRef.current = requestAnimationFrame(draw)
 
       analyser.getByteFrequencyData(dataArray)
 
@@ -95,40 +111,37 @@ function App() {
       const barWidth = w / barCount
       const gap = 2
 
+      // Check energy to pick color (avoids stale closure)
+      const lowEnergy = dataArray.slice(0, 8).reduce((a, b) => a + b, 0)
+      const highEnergy = dataArray.slice(24, 48).reduce((a, b) => a + b, 0)
+
       for (let i = 0; i < barCount; i++) {
         const dataIdx = Math.floor(i * bufferLength / barCount)
         const value = dataArray[dataIdx] / 255
         const barHeight = value * h * 0.8
 
-        // Color based on active fighter
-        let r, g, b
-        if (activeFighter === 1) {
-          r = 255; g = 58; b = 58
-        } else if (activeFighter === 2) {
-          r = 58; g = 138; b = 255
-        } else {
-          r = 255; g = 204; b = 0
-        }
-
+        // Default gold, canvas color will be overridden by CSS class on stage-container
+        const r = 255, g = 204, b = 0
         const alpha = 0.15 + value * 0.35
         ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`
 
         const x = i * barWidth + gap / 2
         ctx.fillRect(x, h - barHeight, barWidth - gap, barHeight)
 
-        // Mirror on top (subtle)
         ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.3})`
         ctx.fillRect(x, 0, barWidth - gap, barHeight * 0.3)
       }
-
-      // Update playback time too
-      const audio = songAudioRef.current
-      if (audio && !audio.paused) {
-        setPlaybackTime(audio.currentTime)
-      }
     }
     draw()
-  }, [showStage, isPlaying]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
+
+  const stopVisualizer = useCallback(() => {
+    vizRunningRef.current = false
+    if (vizRafRef.current) {
+      cancelAnimationFrame(vizRafRef.current)
+      vizRafRef.current = null
+    }
+  }, [])
 
   const stopTracking = useCallback(() => {
     if (rafRef.current) {
@@ -481,6 +494,7 @@ function App() {
       setIsPlaying(false)
       setShowStage(false)
       stopTracking()
+      stopVisualizer()
     } else {
       // Setup analyser on first play
       if (!analyserRef.current) {
@@ -494,6 +508,7 @@ function App() {
       setShowStage(true)
       setShowVote(false)
       setVoted(null)
+      startTracking()
       drawVisualizer()
     }
   }
@@ -501,7 +516,7 @@ function App() {
   const onSongEnded = () => {
     setIsPlaying(false)
     stopTracking()
-    // Show vote screen instead of closing stage
+    stopVisualizer()
     setShowVote(true)
   }
 
@@ -677,7 +692,7 @@ function App() {
 
       <button className="back-btn" onClick={() => {
         setView('home'); setBattle(null); setSongUrl(null); setSectionUrls([])
-        setSectionTimings([]); setError(''); setShowStage(false); stopTracking()
+        setSectionTimings([]); setError(''); setShowStage(false); stopTracking(); stopVisualizer()
         setImg1(null); setImg2(null); setIsPlaying(false); setShowVote(false); setVoted(null)
       }}>
         &larr; All Battles
@@ -717,79 +732,89 @@ function App() {
             </div>
           )}
 
-          {/* STAGE VIEW - shown during full song playback */}
+          {/* FULLSCREEN PERFORMANCE OVERLAY */}
           {(showStage || showVote) && sectionTimings.length > 0 && (
-            <div className="stage-container">
+            <div className="performance-overlay">
+              <button className="perf-close-btn" onClick={() => {
+                const audio = songAudioRef.current
+                if (audio) audio.pause()
+                setIsPlaying(false); setShowStage(false); setShowVote(false)
+                stopTracking(); stopVisualizer()
+              }}>&times;</button>
+
               <canvas
                 ref={canvasRef}
-                className="visualizer-canvas"
-                width={600}
-                height={200}
+                className="visualizer-canvas-fullscreen"
+                width={800}
+                height={400}
               />
-              <div className="stage">
-                <div className={`stage-fighter left ${activeFighter === 1 ? 'active' : ''} ${activeFighter === 2 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 1 ? 'winner' : ''} ${showVote && voted === 2 ? 'loser' : ''}`}>
-                  {img1 ? (
-                    <img src={img1} alt={fig1?.name} className="fighter-portrait" />
-                  ) : (
-                    <div className="fighter-portrait placeholder">{fig1?.name?.[0]}</div>
-                  )}
-                  <div className="fighter-name red">{fig1?.name}</div>
-                </div>
 
-                <div className="stage-vs">
-                  {!showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
-                    <div className="stage-section-label">
-                      {sections[activeSectionIdx].name}
-                    </div>
-                  )}
-                  <span className="stage-vs-text">VS</span>
-                </div>
-
-                <div className={`stage-fighter right ${activeFighter === 2 ? 'active' : ''} ${activeFighter === 1 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 2 ? 'winner' : ''} ${showVote && voted === 1 ? 'loser' : ''}`}>
-                  {img2 ? (
-                    <img src={img2} alt={fig2?.name} className="fighter-portrait" />
-                  ) : (
-                    <div className="fighter-portrait placeholder">{fig2?.name?.[0]}</div>
-                  )}
-                  <div className="fighter-name blue">{fig2?.name}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* LYRICS - shown during playback */}
-          {showStage && !showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
-            <div className={`lyrics-highlight ${getSectionColor(sections[activeSectionIdx])}`}>
-              <div className="lyrics-text">
-                {(Array.isArray(sections[activeSectionIdx].lines) ? sections[activeSectionIdx].lines : (sections[activeSectionIdx].lines_json || [])).join('\n')}
-              </div>
-            </div>
-          )}
-
-          {/* VOTE SCREEN - shown after song ends */}
-          {showVote && (
-            <div className="vote-screen">
-              <h3 className="vote-title">Who Won?</h3>
-              {!voted ? (
-                <div className="vote-buttons">
-                  <button className="vote-btn red" onClick={() => castVote(1)}>
-                    {fig1?.name}
-                  </button>
-                  <button className="vote-btn blue" onClick={() => castVote(2)}>
-                    {fig2?.name}
-                  </button>
-                </div>
-              ) : (
-                <div className="vote-result">
-                  <div className="vote-winner-name">
-                    {voted === 1 ? fig1?.name : fig2?.name}
+              <div className="perf-content">
+                <div className="stage">
+                  <div className={`stage-fighter left ${activeFighter === 1 ? 'active' : ''} ${activeFighter === 2 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 1 ? 'winner' : ''} ${showVote && voted === 2 ? 'loser' : ''}`}>
+                    {img1 ? (
+                      <img src={img1} alt={fig1?.name} className="fighter-portrait" />
+                    ) : (
+                      <div className="fighter-portrait placeholder">{fig1?.name?.[0]}</div>
+                    )}
+                    <div className="fighter-name red">{fig1?.name}</div>
                   </div>
-                  <div className="vote-winner-label">WINS THE BATTLE</div>
-                  <button className="btn btn-fire" onClick={closeVote} style={{ marginTop: 20 }}>
-                    Done
-                  </button>
+
+                  <div className="stage-vs">
+                    {!showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
+                      <div className="stage-section-label">
+                        {sections[activeSectionIdx].name}
+                      </div>
+                    )}
+                    <span className="stage-vs-text">VS</span>
+                  </div>
+
+                  <div className={`stage-fighter right ${activeFighter === 2 ? 'active' : ''} ${activeFighter === 1 ? 'dim' : ''} ${activeFighter === null && isPlaying ? 'both-glow' : ''} ${showVote && voted === 2 ? 'winner' : ''} ${showVote && voted === 1 ? 'loser' : ''}`}>
+                    {img2 ? (
+                      <img src={img2} alt={fig2?.name} className="fighter-portrait" />
+                    ) : (
+                      <div className="fighter-portrait placeholder">{fig2?.name?.[0]}</div>
+                    )}
+                    <div className="fighter-name blue">{fig2?.name}</div>
+                  </div>
                 </div>
-              )}
+
+                {/* LYRICS */}
+                {!showVote && activeSectionIdx >= 0 && sections[activeSectionIdx] && (
+                  <div className={`lyrics-highlight ${getSectionColor(sections[activeSectionIdx])}`}>
+                    <div className="lyrics-text">
+                      {(Array.isArray(sections[activeSectionIdx].lines) ? sections[activeSectionIdx].lines : (sections[activeSectionIdx].lines_json || [])).join('\n')}
+                    </div>
+                  </div>
+                )}
+
+                {/* VOTE */}
+                {showVote && (
+                  <div className="vote-screen">
+                    <h3 className="vote-title">Who Won?</h3>
+                    {!voted ? (
+                      <div className="vote-buttons">
+                        <button className="vote-btn red" onClick={() => castVote(1)}>
+                          {fig1?.name}
+                        </button>
+                        <button className="vote-btn blue" onClick={() => castVote(2)}>
+                          {fig2?.name}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="vote-result">
+                        <div className="vote-winner-name">
+                          {voted === 1 ? fig1?.name : fig2?.name}
+                        </div>
+                        <div className="vote-winner-label">WINS THE BATTLE</div>
+                        <button className="btn btn-fire" onClick={closeVote} style={{ marginTop: 20, maxWidth: 300, margin: '20px auto 0' }}>
+                          Done
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
