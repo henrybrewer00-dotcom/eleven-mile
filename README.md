@@ -47,3 +47,7 @@ AI rap battle generator. Pick two historical figures, Claude writes the bars, El
 - Sections are trimmed, crossfaded, and spliced into one song
 - Battles are saved to a local SQLite database for replay
 - Watch Performance mode shows Wikipedia portraits that light up per verse
+
+---
+
+Built by [Henry Brewer](https://www.henrybrewer.dev), a 14-year-old developer from Austin.
